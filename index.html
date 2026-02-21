@@ -1,699 +1,1107 @@
-<!doctype html>
-<html lang="ja">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>NEXUS Messenger UI (Prototype)</title>
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
+import {
+  MapPin,
+  Image as ImageIcon,
+  FileText,
+  CreditCard,
+  Globe,
+  Sparkles,
+  Send,
+  X,
+  Maximize2,
+  Minimize2,
+  Pin,
+  Search,
+  Languages,
+} from "lucide-react";
 
-  <!-- Leaflet -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+/**
+ * NEXUS Chat Screen UI Spec
+ * - Bottom input with left-side + menu for Attach / Map / Pay
+ * - Top-right auto-translate toggle (language set elsewhere)
+ * - Message long-press / right-click -> AI actions (furigana/meaning/summary/translate)
+ * - Split panels for Map (top) and AI panel (top) that ALWAYS have a clear exit/close
+ * - Pay runs in an in-chat modal, also always closable
+ *
+ * NOTE: This is UI-only (no backend). Wire up with your realtime + storage later.
+ */
 
-  <style>
-    :root{
-      --bg:#0b0b0f;
-      --panel:#12121a;
-      --panel2:#171724;
-      --line:#242438;
-      --text:#f2f2f6;
-      --muted:#b8b8c7;
-      --gold:#d4af37;
-      --danger:#ff5a5f;
-      --radius:16px;
-      --shadow: 0 10px 30px rgba(0,0,0,.35);
-      --tabH:64px;
-    }
-    *{ box-sizing:border-box; }
-    html,body{ height:100%; margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif; background:var(--bg); color:var(--text); }
-    button{ font:inherit; cursor:pointer; }
-    a{ color:inherit; }
+// -------------------- Types --------------------
 
-    /* App shell */
-    .app{
-      height:100%;
-      display:flex;
-      flex-direction:column;
-    }
-    .screen{
-      flex:1;
-      display:none;
-      overflow:hidden;
-    }
-    .screen.active{ display:flex; flex-direction:column; }
+type Message = {
+  id: string;
+  sender: "me" | "them";
+  text?: string;
+  translatedText?: string;
+  createdAt: number;
+  attachments?: { kind: "image" | "video" | "file"; name: string }[];
+  location?: { label: string; lat: number; lng: number };
+  payment?: { amountYen: number; status: "sent" | "requested" };
+};
 
-    /* Header */
-    .header{
-      height:56px;
-      padding:0 14px;
-      display:flex;
-      align-items:center;
-      justify-content:space-between;
-      border-bottom:1px solid var(--line);
-      background:rgba(18,18,26,.9);
-      backdrop-filter: blur(10px);
-    }
-    .header .title{
-      font-weight:700;
-      letter-spacing:.2px;
-    }
-    .iconBtn{
-      height:38px;
-      min-width:38px;
-      border-radius:12px;
-      border:1px solid var(--line);
-      background:linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.02));
-      color:var(--text);
-      display:inline-flex;
-      align-items:center;
-      justify-content:center;
-      gap:8px;
-      padding:0 10px;
-    }
-    .iconBtn.gold{ border-color: rgba(212,175,55,.35); }
-    .iconBtn:active{ transform: translateY(1px); }
+type SplitMode =
+  | { kind: "none" }
+  | { kind: "map" }
+  | { kind: "ai"; messageId: string; action: AIAction };
 
-    /* Tab bar */
-    .tabs{
-      height:var(--tabH);
-      display:flex;
-      border-top:1px solid var(--line);
-      background:rgba(12,12,18,.92);
-      backdrop-filter: blur(10px);
-    }
-    .tab{
-      flex:1;
-      border:0;
-      background:transparent;
-      color:var(--muted);
-      display:flex;
-      flex-direction:column;
-      align-items:center;
-      justify-content:center;
-      gap:4px;
-      font-size:12px;
-    }
-    .tab.active{ color:var(--text); }
-    .tab .dot{
-      width:6px; height:6px; border-radius:999px;
-      background:transparent;
-    }
-    .tab.active .dot{ background:var(--gold); }
+type AIAction =
+  | "furigana"
+  | "meaning"
+  | "summary"
+  | "translate"
+  | "examples";
 
-    /* Lists */
-    .list{
-      flex:1;
-      overflow:auto;
-    }
-    .row{
-      display:flex;
-      align-items:center;
-      gap:12px;
-      padding:14px;
-      border-bottom:1px solid var(--line);
-      background:linear-gradient(180deg, rgba(255,255,255,.02), rgba(255,255,255,0));
-    }
-    .row:hover{ background:rgba(255,255,255,.03); }
-    .avatar{
-      width:44px; height:44px; border-radius:999px;
-      background:#232338;
-      border:1px solid rgba(255,255,255,.06);
-    }
-    .rowMain{ flex:1; min-width:0; }
-    .rowMain .name{ font-weight:700; }
-    .rowMain .last{ color:var(--muted); margin-top:4px; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .badge{
-      background:var(--gold);
-      color:#0b0b0f;
-      font-weight:800;
-      border-radius:999px;
-      padding:4px 9px;
-      font-size:12px;
-    }
+// -------------------- Helpers --------------------
 
-    /* Chat */
-    .chatWrap{
-      flex:1;
-      display:flex;
-      flex-direction:column;
-      overflow:hidden;
-    }
-    .chatBody{
-      flex:1;
-      overflow:auto;
-      padding:14px;
-      display:flex;
-      flex-direction:column;
-      gap:10px;
-    }
-    .bubble{
-      max-width:78%;
-      padding:10px 12px;
-      border-radius:14px;
-      border:1px solid rgba(255,255,255,.06);
-      background:rgba(255,255,255,.04);
-      box-shadow: 0 4px 14px rgba(0,0,0,.18);
-      line-height:1.35;
-      font-size:14px;
-    }
-    .bubble.me{
-      margin-left:auto;
-      border-color: rgba(212,175,55,.25);
-      background: linear-gradient(180deg, rgba(212,175,55,.18), rgba(255,255,255,.02));
-    }
-    .chatInput{
-      border-top:1px solid var(--line);
-      padding:10px;
-      display:flex;
-      gap:10px;
-      background:rgba(18,18,26,.92);
-    }
-    .chatInput input{
-      flex:1;
-      background:rgba(255,255,255,.04);
-      border:1px solid rgba(255,255,255,.08);
-      border-radius:14px;
-      padding:11px 12px;
-      color:var(--text);
-      outline:none;
-    }
-    .chatInput input:focus{ border-color: rgba(212,175,55,.35); }
+function uid(prefix = "id") {
+  return `${prefix}_${Math.random().toString(16).slice(2)}_${Date.now()}`;
+}
 
-    /* Split map */
-    .split{
-      flex:1;
-      display:flex;
-      flex-direction:column;
-      overflow:hidden;
-      background:var(--bg);
-    }
-    .splitTop{
-      position:relative;
-      min-height:120px;
-      border-bottom:1px solid var(--line);
-    }
-    #map{
-      height:100%;
-      width:100%;
-    }
-    .splitControls{
-      position:absolute;
-      left:12px; right:12px; bottom:10px;
-      display:flex;
-      gap:10px;
-      align-items:center;
-      padding:10px 12px;
-      border-radius:14px;
-      background:rgba(12,12,18,.72);
-      border:1px solid rgba(255,255,255,.08);
-      backdrop-filter: blur(10px);
-      box-shadow: var(--shadow);
-    }
-    .splitControls label{ color:var(--muted); font-size:12px; min-width:92px; }
-    .splitControls input[type="range"]{ flex:1; }
-    .pill{
-      padding:6px 10px;
-      border-radius:999px;
-      border:1px solid rgba(212,175,55,.35);
-      color:var(--gold);
-      font-size:12px;
-      background:rgba(212,175,55,.08);
-    }
+function formatTime(ts: number) {
+  const d = new Date(ts);
+  const hh = d.getHours().toString().padStart(2, "0");
+  const mm = d.getMinutes().toString().padStart(2, "0");
+  return `${hh}:${mm}`;
+}
 
-    /* Bottom sheet menu */
-    .overlay{
-      position:fixed; inset:0;
-      background:rgba(0,0,0,.55);
-      display:none;
-      align-items:flex-end;
-      justify-content:center;
-      z-index:50;
-    }
-    .overlay.show{ display:flex; }
-    .sheet{
-      width:min(520px, 100%);
-      background:linear-gradient(180deg, rgba(23,23,36,.98), rgba(12,12,18,.98));
-      border:1px solid rgba(255,255,255,.10);
-      border-bottom:none;
-      border-top-left-radius:18px;
-      border-top-right-radius:18px;
-      box-shadow: var(--shadow);
-      padding:12px;
-      margin-bottom:0;
-    }
-    .sheetHeader{
-      display:flex;
-      justify-content:space-between;
-      align-items:center;
-      padding:6px 6px 10px;
-    }
-    .sheetTitle{ font-weight:800; }
-    .sheetGrid{
-      display:grid;
-      grid-template-columns: 1fr 1fr;
-      gap:10px;
-      padding:6px;
-    }
-    .sheetItem{
-      border-radius:16px;
-      border:1px solid rgba(255,255,255,.10);
-      background:rgba(255,255,255,.04);
-      padding:14px;
-      display:flex;
-      flex-direction:column;
-      gap:6px;
-      min-height:84px;
-    }
-    .sheetItem .k{ color:var(--gold); font-weight:800; }
-    .sheetItem .d{ color:var(--muted); font-size:12px; line-height:1.3; }
+// -------------------- Main Component --------------------
 
-    /* Pay modal */
-    .modal{
-      position:fixed; inset:0;
-      display:none;
-      align-items:center;
-      justify-content:center;
-      z-index:60;
-      background:rgba(0,0,0,.6);
-    }
-    .modal.show{ display:flex; }
-    .card{
-      width:min(520px, 92vw);
-      background:linear-gradient(180deg, rgba(18,18,26,.98), rgba(12,12,18,.98));
-      border:1px solid rgba(255,255,255,.10);
-      border-radius:18px;
-      box-shadow: var(--shadow);
-      padding:14px;
-    }
-    .card h3{ margin:6px 0 12px; }
-    .field{
-      display:flex;
-      flex-direction:column;
-      gap:6px;
-      margin:10px 0;
-    }
-    .field label{ font-size:12px; color:var(--muted); }
-    .field input{
-      background:rgba(255,255,255,.04);
-      border:1px solid rgba(255,255,255,.10);
-      border-radius:14px;
-      padding:11px 12px;
-      color:var(--text);
-      outline:none;
-    }
-    .rowBtns{ display:flex; gap:10px; margin-top:12px; }
-    .btn{
-      flex:1;
-      border-radius:14px;
-      padding:11px 12px;
-      border:1px solid rgba(255,255,255,.10);
-      background:rgba(255,255,255,.05);
-      color:var(--text);
-      font-weight:800;
-    }
-    .btn.primary{
-      border-color: rgba(212,175,55,.35);
-      background: linear-gradient(180deg, rgba(212,175,55,.24), rgba(255,255,255,.02));
-      color: #fff;
-    }
-    .btn.danger{
-      border-color: rgba(255,90,95,.25);
-      background: rgba(255,90,95,.08);
-    }
-    .hint{ color:var(--muted); font-size:12px; margin-top:8px; line-height:1.35; }
+export default function NexusChatScreenUISpec() {
+  // UI state
+  const [autoTranslateOn, setAutoTranslateOn] = useState(true);
+  const [translateTo, setTranslateTo] = useState("Japanese"); // settings page would control this
 
-    /* Simple screens */
-    .center{
-      flex:1;
-      display:flex;
-      align-items:center;
-      justify-content:center;
-      color:var(--muted);
-      padding:18px;
-      text-align:center;
-    }
+  // Split-pane state: ensures map/ai are reversible with explicit close.
+  const [split, setSplit] = useState<SplitMode>({ kind: "none" });
+  const [splitRatio, setSplitRatio] = useState(40); // top panel height percentage (30..70)
 
-    /* Responsive container */
-    .max{
-      width:min(720px, 100%);
-      margin:0 auto;
-      height:100%;
-      display:flex;
-      flex-direction:column;
-    }
-  </style>
-</head>
+  // Pay modal state
+  const [payOpen, setPayOpen] = useState(false);
 
-<body>
-<div class="app">
-  <div class="max">
+  // Attach drawer state
+  const [attachOpen, setAttachOpen] = useState(false);
 
-    <!-- POST -->
-    <section id="screen-post" class="screen active">
-      <div class="header">
-        <div class="title">Post</div>
-        <button class="iconBtn gold" onclick="toast('通知・設定は後でOK')">🔔</button>
+  // Input state
+  const [draft, setDraft] = useState("");
+
+  // Message action menu
+  const [activeMsgId, setActiveMsgId] = useState<string | null>(null);
+
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const now = Date.now();
+    return [
+      {
+        id: uid("m"),
+        sender: "them",
+        text: "これ、どう思う？ 期限が迫ってる。",
+        translatedText: "What do you think about this? The deadline is coming up.",
+        createdAt: now - 1000 * 60 * 20,
+      },
+      {
+        id: uid("m"),
+        sender: "me",
+        text: "了解。まずMVPに削って作る。",
+        translatedText: "Got it. We'll cut it down to an MVP and build.",
+        createdAt: now - 1000 * 60 * 18,
+      },
+      {
+        id: uid("m"),
+        sender: "them",
+        text: "『矛盾』って漢字の読み方わかる？",
+        translatedText: "Do you know how to read the kanji for 'contradiction'?",
+        createdAt: now - 1000 * 60 * 12,
+      },
+    ];
+  });
+
+  // Auto-scroll on new messages
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages.length]);
+
+  const activeMsg = useMemo(
+    () => messages.find((m) => m.id === activeMsgId) ?? null,
+    [messages, activeMsgId]
+  );
+
+  const aiPanel = useMemo(() => {
+    if (split.kind !== "ai") return null;
+    const msg = messages.find((m) => m.id === split.messageId);
+    if (!msg) return null;
+    return {
+      message: msg,
+      action: split.action,
+    };
+  }, [split, messages]);
+
+  // --------------- Actions ---------------
+
+  function sendText() {
+    const text = draft.trim();
+    if (!text) return;
+    const msg: Message = {
+      id: uid("m"),
+      sender: "me",
+      text,
+      translatedText: autoTranslateOn ? mockTranslate(text, translateTo) : undefined,
+      createdAt: Date.now(),
+    };
+    setMessages((prev) => [...prev, msg]);
+    setDraft("");
+  }
+
+  function openMapSplit() {
+    setSplit({ kind: "map" });
+  }
+
+  function closeSplit() {
+    setSplit({ kind: "none" });
+  }
+
+  function openAI(messageId: string, action: AIAction) {
+    setSplit({ kind: "ai", messageId, action });
+  }
+
+  function sendLocation() {
+    // Example message with location
+    const msg: Message = {
+      id: uid("m"),
+      sender: "me",
+      createdAt: Date.now(),
+      location: { label: "Current location", lat: 35.6895, lng: 139.6917 },
+      text: "現在地を送った",
+      translatedText: autoTranslateOn ? "Sent my current location" : undefined,
+    };
+    setMessages((prev) => [...prev, msg]);
+    // map split can remain open, but must be closable; keep as-is.
+  }
+
+  function requestPay() {
+    setPayOpen(true);
+  }
+
+  function commitPay(amountYen: number) {
+    const msg: Message = {
+      id: uid("m"),
+      sender: "me",
+      createdAt: Date.now(),
+      payment: { amountYen, status: "sent" },
+      text: `¥${amountYen.toLocaleString()} を送金した`,
+      translatedText: autoTranslateOn
+        ? `Sent ¥${amountYen.toLocaleString()}`
+        : undefined,
+    };
+    setMessages((prev) => [...prev, msg]);
+    setPayOpen(false);
+  }
+
+  // --------------- Render ---------------
+
+  return (
+    <div className="min-h-[90vh] w-full bg-black text-white">
+      <div className="mx-auto max-w-5xl p-4">
+        <Header
+          autoTranslateOn={autoTranslateOn}
+          setAutoTranslateOn={setAutoTranslateOn}
+          translateTo={translateTo}
+          setTranslateTo={setTranslateTo}
+        />
+
+        <div className="mt-4 grid gap-3">
+          {/* Main Chat Card */}
+          <Card className="border-white/10 bg-white/5 shadow-xl">
+            <CardContent className="p-0">
+              {/* Split container */}
+              <div className="relative">
+                {/* Top split panel */}
+                {split.kind !== "none" && (
+                  <TopPanel
+                    split={split}
+                    ratio={splitRatio}
+                    setRatio={setSplitRatio}
+                    onClose={closeSplit}
+                    onSendLocation={sendLocation}
+                    aiPanel={aiPanel}
+                    onRunAI={(action) => {
+                      if (!aiPanel) return;
+                      openAI(aiPanel.message.id, action);
+                    }}
+                  />
+                )}
+
+                {/* Chat area */}
+                <div
+                  className="flex flex-col"
+                  style={{
+                    height: "70vh",
+                    paddingTop: split.kind === "none" ? 0 : `${splitRatio}vh`,
+                  }}
+                >
+                  <ScrollArea className="flex-1">
+                    <div
+                      ref={scrollRef}
+                      className="h-full max-h-[70vh] overflow-y-auto px-4 py-4"
+                    >
+                      <div className="space-y-3">
+                        {messages.map((m) => (
+                          <MessageBubble
+                            key={m.id}
+                            msg={m}
+                            autoTranslateOn={autoTranslateOn}
+                            onOpenActions={() => setActiveMsgId(m.id)}
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </ScrollArea>
+
+                  <Separator className="bg-white/10" />
+
+                  {/* Composer */}
+                  <Composer
+                    draft={draft}
+                    setDraft={setDraft}
+                    onSend={sendText}
+                    onOpenAttach={() => setAttachOpen(true)}
+                  />
+                </div>
+
+                {/* Attach menu (in-chat) */}
+                <AttachDrawer
+                  open={attachOpen}
+                  onOpenChange={setAttachOpen}
+                  onPickImage={() => {
+                    setAttachOpen(false);
+                    // mock attachment
+                    setMessages((prev) => [
+                      ...prev,
+                      {
+                        id: uid("m"),
+                        sender: "me",
+                        createdAt: Date.now(),
+                        attachments: [{ kind: "image", name: "photo.png" }],
+                        text: "画像を送った",
+                        translatedText: autoTranslateOn ? "Sent an image" : undefined,
+                      },
+                    ]);
+                  }}
+                  onPickFile={() => {
+                    setAttachOpen(false);
+                    setMessages((prev) => [
+                      ...prev,
+                      {
+                        id: uid("m"),
+                        sender: "me",
+                        createdAt: Date.now(),
+                        attachments: [{ kind: "file", name: "doc.pdf" }],
+                        text: "ファイルを送った",
+                        translatedText: autoTranslateOn ? "Sent a file" : undefined,
+                      },
+                    ]);
+                  }}
+                  onOpenMap={() => {
+                    setAttachOpen(false);
+                    openMapSplit();
+                  }}
+                  onOpenPay={() => {
+                    setAttachOpen(false);
+                    requestPay();
+                  }}
+                />
+
+                {/* Pay modal */}
+                <PayModal
+                  open={payOpen}
+                  onOpenChange={setPayOpen}
+                  onConfirm={commitPay}
+                />
+
+                {/* Message actions menu (AI / translate / copy) */}
+                <MessageActionMenu
+                  open={!!activeMsgId}
+                  onOpenChange={(v) => {
+                    if (!v) setActiveMsgId(null);
+                  }}
+                  message={activeMsg}
+                  onAction={(action) => {
+                    if (!activeMsg) return;
+                    setActiveMsgId(null);
+                    openAI(activeMsg.id, action);
+                  }}
+                />
+              </div>
+            </CardContent>
+          </Card>
+
+          <FooterNotes />
+        </div>
       </div>
-      <div class="center">
-        Postは今回は省略（Messenger中心のプロトタイプ）<br>
-        下の「Talk」を押してね
+    </div>
+  );
+}
+
+// -------------------- Header --------------------
+
+function Header({
+  autoTranslateOn,
+  setAutoTranslateOn,
+  translateTo,
+  setTranslateTo,
+}: {
+  autoTranslateOn: boolean;
+  setAutoTranslateOn: (v: boolean) => void;
+  translateTo: string;
+  setTranslateTo: (v: string) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center gap-3">
+        <div className="h-10 w-10 rounded-2xl bg-white/10" />
+        <div>
+          <div className="text-lg font-semibold">NEXUS Messenger</div>
+          <div className="text-xs text-white/60">Chat UI spec • split map/AI • auto-translate</div>
+        </div>
       </div>
-    </section>
 
-    <!-- TALK LIST -->
-    <section id="screen-talk" class="screen">
-      <div class="header">
-        <div class="title">Talk</div>
-        <button class="iconBtn gold" onclick="toast('検索は後で実装')">🔎</button>
+      <div className="flex items-center gap-3">
+        <div className="hidden items-center gap-2 md:flex">
+          <div className="flex items-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-3 py-2">
+            <Globe className="h-4 w-4 text-white/70" />
+            <span className="text-sm text-white/80">Auto translate</span>
+            <Switch checked={autoTranslateOn} onCheckedChange={setAutoTranslateOn} />
+          </div>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="secondary" className="rounded-2xl bg-white/10 text-white hover:bg-white/15">
+                <Languages className="mr-2 h-4 w-4" />
+                {translateTo}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent className="border-white/10 bg-black text-white">
+              <DropdownMenuLabel>Translate to</DropdownMenuLabel>
+              <DropdownMenuSeparator className="bg-white/10" />
+              {[
+                "Japanese",
+                "English",
+                "Korean",
+                "Chinese",
+                "Spanish",
+                "French",
+              ].map((lang) => (
+                <DropdownMenuItem
+                  key={lang}
+                  className="focus:bg-white/10"
+                  onClick={() => setTranslateTo(lang)}
+                >
+                  {lang}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+
+        {/* Mobile compact */}
+        <div className="flex items-center gap-2 md:hidden">
+          <Button
+            variant="secondary"
+            className="rounded-2xl bg-white/10 text-white hover:bg-white/15"
+            onClick={() => setAutoTranslateOn(!autoTranslateOn)}
+            aria-label="Toggle auto translate"
+          >
+            <Globe className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// -------------------- Top Panel (Map / AI) --------------------
+
+function TopPanel({
+  split,
+  ratio,
+  setRatio,
+  onClose,
+  onSendLocation,
+  aiPanel,
+  onRunAI,
+}: {
+  split: SplitMode;
+  ratio: number;
+  setRatio: (v: number) => void;
+  onClose: () => void;
+  onSendLocation: () => void;
+  aiPanel: { message: Message; action: AIAction } | null;
+  onRunAI: (action: AIAction) => void;
+}) {
+  // Clamp ratio 30..70
+  const safeRatio = Math.max(30, Math.min(70, ratio));
+
+  return (
+    <div
+      className="absolute left-0 right-0 top-0 z-10 overflow-hidden border-b border-white/10 bg-black/70 backdrop-blur"
+      style={{ height: `${safeRatio}vh` }}
+    >
+      <div className="flex h-full flex-col">
+        {/* Panel header with explicit exit */}
+        <div className="flex items-center justify-between border-b border-white/10 px-3 py-2">
+          <div className="flex items-center gap-2">
+            {split.kind === "map" ? (
+              <>
+                <MapPin className="h-4 w-4 text-white/70" />
+                <span className="text-sm text-white/90">Map</span>
+              </>
+            ) : (
+              <>
+                <Sparkles className="h-4 w-4 text-white/70" />
+                <span className="text-sm text-white/90">AI Assist</span>
+              </>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              className="h-8 rounded-xl bg-white/10 px-2 text-white hover:bg-white/15"
+              onClick={() => setRatio(Math.max(30, safeRatio - 10))}
+              aria-label="Reduce panel height"
+            >
+              <Minimize2 className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="secondary"
+              className="h-8 rounded-xl bg-white/10 px-2 text-white hover:bg-white/15"
+              onClick={() => setRatio(Math.min(70, safeRatio + 10))}
+              aria-label="Increase panel height"
+            >
+              <Maximize2 className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="secondary"
+              className="h-8 rounded-xl bg-white/10 px-2 text-white hover:bg-white/15"
+              onClick={onClose}
+              aria-label="Close panel"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        {/* Panel content */}
+        <div className="flex-1 p-3">
+          {split.kind === "map" ? (
+            <MapPanel onSendLocation={onSendLocation} />
+          ) : (
+            <AIPanel aiPanel={aiPanel} onRunAI={onRunAI} />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MapPanel({ onSendLocation }: { onSendLocation: () => void }) {
+  return (
+    <div className="grid h-full grid-cols-1 gap-3 md:grid-cols-3">
+      <div className="md:col-span-2">
+        <div className="h-full min-h-[200px] rounded-2xl border border-white/10 bg-white/5 p-4">
+          <div className="flex h-full flex-col justify-between">
+            <div>
+              <div className="text-sm font-medium">Map placeholder</div>
+              <div className="mt-1 text-xs text-white/60">
+                Replace with Google Maps / Mapbox. This area is the real-time map.
+              </div>
+              <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3 text-xs text-white/70">
+                • When split is open, user must ALWAYS be able to close (X)
+                <br />• Map interactions should never hijack navigation
+                <br />• Send location uses in-chat message (no route change)
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <Button
+                variant="secondary"
+                className="rounded-2xl bg-white/10 text-white hover:bg-white/15"
+                onClick={onSendLocation}
+              >
+                <MapPin className="mr-2 h-4 w-4" />
+                Send current location
+              </Button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div className="md:col-span-1">
+        <div className="h-full rounded-2xl border border-white/10 bg-white/5 p-4">
+          <div className="text-sm font-medium">Map tools</div>
+          <div className="mt-2 space-y-2 text-xs text-white/70">
+            <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+              • Distance / ETA (mock)
+              <div className="mt-2 text-white/60">Distance: 1.4km</div>
+              <div className="text-white/60">ETA: 6 min</div>
+            </div>
+            <div className="rounded-xl border border-white/10 bg-black/30 p-3">
+              • Visibility: mutual follow only
+              <div className="mt-2 text-white/60">Privacy: ON</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AIPanel({
+  aiPanel,
+  onRunAI,
+}: {
+  aiPanel: { message: Message; action: AIAction } | null;
+  onRunAI: (action: AIAction) => void;
+}) {
+  if (!aiPanel) {
+    return (
+      <div className="flex h-full items-center justify-center rounded-2xl border border-white/10 bg-white/5 p-6 text-center">
+        <div>
+          <div className="text-sm font-medium">Select a message → AI Assist</div>
+          <div className="mt-2 text-xs text-white/60">
+            Long-press / right-click a message and choose Furigana / Meaning / Summary.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  const { message, action } = aiPanel;
+  return (
+    <div className="grid h-full grid-cols-1 gap-3 md:grid-cols-3">
+      <div className="md:col-span-1">
+        <div className="h-full rounded-2xl border border-white/10 bg-white/5 p-4">
+          <div className="text-xs text-white/60">Selected message</div>
+          <div className="mt-2 rounded-xl border border-white/10 bg-black/30 p-3 text-sm">
+            {message.text ?? "(non-text message)"}
+          </div>
+
+          <div className="mt-4">
+            <div className="text-xs text-white/60">Actions</div>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <Button
+                variant="secondary"
+                className="rounded-xl bg-white/10 text-white hover:bg-white/15"
+                onClick={() => onRunAI("furigana")}
+              >
+                Furigana
+              </Button>
+              <Button
+                variant="secondary"
+                className="rounded-xl bg-white/10 text-white hover:bg-white/15"
+                onClick={() => onRunAI("meaning")}
+              >
+                Meaning
+              </Button>
+              <Button
+                variant="secondary"
+                className="rounded-xl bg-white/10 text-white hover:bg-white/15"
+                onClick={() => onRunAI("summary")}
+              >
+                Summary
+              </Button>
+              <Button
+                variant="secondary"
+                className="rounded-xl bg-white/10 text-white hover:bg-white/15"
+                onClick={() => onRunAI("examples")}
+              >
+                Examples
+              </Button>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div class="list" id="talkList"></div>
-    </section>
-
-    <!-- CHAT -->
-    <section id="screen-chat" class="screen">
-      <div class="header">
-        <button class="iconBtn" onclick="goTalk()">←</button>
-        <div class="title" id="chatTitle">Chat</div>
-        <button class="iconBtn gold" onclick="openSheet()">＋</button>
+      <div className="md:col-span-2">
+        <div className="h-full rounded-2xl border border-white/10 bg-white/5 p-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm font-medium">Result • {labelForAIAction(action)}</div>
+            <div className="text-xs text-white/60">(mock output)</div>
+          </div>
+          <div className="mt-3 h-[calc(100%-40px)] overflow-auto rounded-xl border border-white/10 bg-black/30 p-4 text-sm leading-relaxed">
+            {mockAIOutput(message.text ?? "", action)}
+          </div>
+        </div>
       </div>
+    </div>
+  );
+}
 
-      <!-- Split container: map+chat OR just chat -->
-      <div class="chatWrap" id="chatWrap">
-        <!-- Split mode root -->
-        <div class="split" id="splitRoot" style="display:none;">
-          <div class="splitTop" id="splitTop">
-            <div id="map"></div>
-            <div class="splitControls">
-              <label>表示比率</label>
-              <input id="ratioRange" type="range" min="30" max="70" value="50" />
-              <span class="pill"><span id="ratioLabel">50</span>%</span>
+function labelForAIAction(a: AIAction) {
+  switch (a) {
+    case "furigana":
+      return "Reading";
+    case "meaning":
+      return "Explanation";
+    case "summary":
+      return "Summary";
+    case "translate":
+      return "Translation";
+    case "examples":
+      return "Examples";
+    default:
+      return "AI";
+  }
+}
+
+// -------------------- Message Bubble --------------------
+
+function MessageBubble({
+  msg,
+  autoTranslateOn,
+  onOpenActions,
+}: {
+  msg: Message;
+  autoTranslateOn: boolean;
+  onOpenActions: () => void;
+}) {
+  const mine = msg.sender === "me";
+
+  return (
+    <div className={`flex ${mine ? "justify-end" : "justify-start"}`}>
+      <div
+        className={
+          `max-w-[85%] rounded-2xl border px-4 py-3 ` +
+          (mine
+            ? "border-white/10 bg-white/10"
+            : "border-white/10 bg-white/5")
+        }
+        onContextMenu={(e) => {
+          e.preventDefault();
+          onOpenActions();
+        }}
+        onDoubleClick={onOpenActions}
+        role="button"
+        tabIndex={0}
+        aria-label="Message"
+      >
+        <div className="flex items-center justify-between gap-4">
+          <div className="text-xs text-white/60">{formatTime(msg.createdAt)}</div>
+          <div className="flex items-center gap-2 text-white/40">
+            <Pin className="h-3.5 w-3.5" />
+            <Search className="h-3.5 w-3.5" />
+          </div>
+        </div>
+
+        {msg.text && <div className="mt-2 text-sm">{msg.text}</div>}
+
+        {/* Auto translation line */}
+        {autoTranslateOn && msg.translatedText && (
+          <div className="mt-2 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-white/70">
+            {msg.translatedText}
+          </div>
+        )}
+
+        {/* Attachments */}
+        {msg.attachments?.length ? (
+          <div className="mt-3 space-y-2">
+            {msg.attachments.map((a, idx) => (
+              <div
+                key={`${a.kind}_${idx}`}
+                className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs"
+              >
+                {a.kind === "image" ? (
+                  <ImageIcon className="h-4 w-4 text-white/70" />
+                ) : a.kind === "video" ? (
+                  <ImageIcon className="h-4 w-4 text-white/70" />
+                ) : (
+                  <FileText className="h-4 w-4 text-white/70" />
+                )}
+                <span className="text-white/80">{a.name}</span>
+              </div>
+            ))}
+          </div>
+        ) : null}
+
+        {/* Location */}
+        {msg.location ? (
+          <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3 text-xs">
+            <div className="flex items-center gap-2">
+              <MapPin className="h-4 w-4 text-white/70" />
+              <span className="text-white/80">{msg.location.label}</span>
+            </div>
+            <div className="mt-1 text-white/60">
+              {msg.location.lat.toFixed(4)}, {msg.location.lng.toFixed(4)}
+            </div>
+          </div>
+        ) : null}
+
+        {/* Payment */}
+        {msg.payment ? (
+          <div className="mt-3 rounded-xl border border-white/10 bg-black/30 p-3 text-xs">
+            <div className="flex items-center gap-2">
+              <CreditCard className="h-4 w-4 text-white/70" />
+              <span className="text-white/80">
+                {msg.payment.status === "sent" ? "Payment sent" : "Payment requested"}
+              </span>
+            </div>
+            <div className="mt-1 text-white/60">¥{msg.payment.amountYen.toLocaleString()}</div>
+          </div>
+        ) : null}
+
+        <div className="mt-3 text-[11px] text-white/40">
+          Tip: right-click / double-click to open AI actions.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// -------------------- Composer --------------------
+
+function Composer({
+  draft,
+  setDraft,
+  onSend,
+  onOpenAttach,
+}: {
+  draft: string;
+  setDraft: (v: string) => void;
+  onSend: () => void;
+  onOpenAttach: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 px-3 py-3">
+      <Button
+        variant="secondary"
+        className="h-10 w-10 rounded-2xl bg-white/10 p-0 text-white hover:bg-white/15"
+        onClick={onOpenAttach}
+        aria-label="Open plus menu"
+      >
+        <span className="text-lg leading-none">＋</span>
+      </Button>
+
+      <Input
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        placeholder="Message…"
+        className="h-10 rounded-2xl border-white/10 bg-white/5 text-white placeholder:text-white/40"
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            onSend();
+          }
+        }}
+      />
+
+      <Button
+        className="h-10 rounded-2xl bg-white text-black hover:bg-white/90"
+        onClick={onSend}
+        aria-label="Send"
+      >
+        <Send className="mr-2 h-4 w-4" />
+        Send
+      </Button>
+    </div>
+  );
+}
+
+// -------------------- Attach Drawer --------------------
+
+function AttachDrawer({
+  open,
+  onOpenChange,
+  onPickImage,
+  onPickFile,
+  onOpenMap,
+  onOpenPay,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onPickImage: () => void;
+  onPickFile: () => void;
+  onOpenMap: () => void;
+  onOpenPay: () => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="border-white/10 bg-black text-white sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle className="text-white">＋ Menu</DialogTitle>
+        </DialogHeader>
+
+        <Tabs defaultValue="attach" className="w-full">
+          <TabsList className="grid w-full grid-cols-3 rounded-2xl bg-white/5">
+            <TabsTrigger value="attach" className="rounded-2xl">Attach</TabsTrigger>
+            <TabsTrigger value="map" className="rounded-2xl">Map</TabsTrigger>
+            <TabsTrigger value="pay" className="rounded-2xl">Pay</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="attach" className="mt-4">
+            <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+              <Button
+                variant="secondary"
+                className="justify-start rounded-2xl bg-white/10 text-white hover:bg-white/15"
+                onClick={onPickImage}
+              >
+                <ImageIcon className="mr-2 h-4 w-4" />
+                Image / Video
+              </Button>
+              <Button
+                variant="secondary"
+                className="justify-start rounded-2xl bg-white/10 text-white hover:bg-white/15"
+                onClick={onPickFile}
+              >
+                <FileText className="mr-2 h-4 w-4" />
+                File
+              </Button>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="map" className="mt-4">
+            <Button
+              variant="secondary"
+              className="w-full justify-start rounded-2xl bg-white/10 text-white hover:bg-white/15"
+              onClick={onOpenMap}
+            >
+              <MapPin className="mr-2 h-4 w-4" />
+              Open split map (no route change)
+            </Button>
+            <div className="mt-2 text-xs text-white/60">
+              Map opens as a reversible top panel with an explicit close button.
+            </div>
+          </TabsContent>
+
+          <TabsContent value="pay" className="mt-4">
+            <Button
+              variant="secondary"
+              className="w-full justify-start rounded-2xl bg-white/10 text-white hover:bg-white/15"
+              onClick={onOpenPay}
+            >
+              <CreditCard className="mr-2 h-4 w-4" />
+              Send money (in-chat modal)
+            </Button>
+            <div className="mt-2 text-xs text-white/60">
+              Pay must always be dismissible (X / cancel / ESC).
+            </div>
+          </TabsContent>
+        </Tabs>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+// -------------------- Pay Modal --------------------
+
+function PayModal({
+  open,
+  onOpenChange,
+  onConfirm,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onConfirm: (amountYen: number) => void;
+}) {
+  const [amount, setAmount] = useState("1000");
+
+  useEffect(() => {
+    if (!open) return;
+    setAmount("1000");
+  }, [open]);
+
+  const amountNum = Math.max(0, Number(amount || 0));
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="border-white/10 bg-black text-white sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle className="text-white">NEXUS Pay</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div className="text-xs text-white/60">Amount (JPY)</div>
+            <Input
+              value={amount}
+              onChange={(e) => setAmount(e.target.value.replace(/[^0-9]/g, ""))}
+              className="mt-2 h-10 rounded-2xl border-white/10 bg-black/30 text-white"
+              inputMode="numeric"
+            />
+            <div className="mt-2 text-xs text-white/60">
+              Confirm → (biometric/auth step later) → send
             </div>
           </div>
 
-          <div class="chatBody" id="chatBodySplit"></div>
-
-          <div class="chatInput">
-            <input id="chatInputSplit" placeholder="メッセージを入力…" />
-            <button class="iconBtn gold" onclick="sendMessage(true)">送信</button>
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="secondary"
+              className="rounded-2xl bg-white/10 text-white hover:bg-white/15"
+              onClick={() => onOpenChange(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              className="rounded-2xl bg-white text-black hover:bg-white/90"
+              onClick={() => onConfirm(amountNum)}
+              disabled={!Number.isFinite(amountNum) || amountNum <= 0}
+            >
+              Confirm
+            </Button>
           </div>
         </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
-        <!-- Normal chat root -->
-        <div style="display:flex; flex:1; flex-direction:column;" id="normalRoot">
-          <div class="chatBody" id="chatBody"></div>
-          <div class="chatInput">
-            <input id="chatInput" placeholder="メッセージを入力…" />
-            <button class="iconBtn gold" onclick="sendMessage(false)">送信</button>
+// -------------------- Message Action Menu --------------------
+
+function MessageActionMenu({
+  open,
+  onOpenChange,
+  message,
+  onAction,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  message: Message | null;
+  onAction: (action: AIAction) => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="border-white/10 bg-black text-white sm:max-w-[520px]">
+        <DialogHeader>
+          <DialogTitle className="text-white">Message actions</DialogTitle>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+            <div className="text-xs text-white/60">Target</div>
+            <div className="mt-2 rounded-xl border border-white/10 bg-black/30 p-3 text-sm">
+              {message?.text ?? "(no message)"}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <Button
+              variant="secondary"
+              className="justify-start rounded-2xl bg-white/10 text-white hover:bg-white/15"
+              onClick={() => onAction("furigana")}
+              disabled={!message?.text}
+            >
+              <Sparkles className="mr-2 h-4 w-4" />
+              Furigana
+            </Button>
+            <Button
+              variant="secondary"
+              className="justify-start rounded-2xl bg-white/10 text-white hover:bg-white/15"
+              onClick={() => onAction("meaning")}
+              disabled={!message?.text}
+            >
+              <Sparkles className="mr-2 h-4 w-4" />
+              Meaning
+            </Button>
+            <Button
+              variant="secondary"
+              className="justify-start rounded-2xl bg-white/10 text-white hover:bg-white/15"
+              onClick={() => onAction("summary")}
+              disabled={!message?.text}
+            >
+              <Sparkles className="mr-2 h-4 w-4" />
+              Summary
+            </Button>
+            <Button
+              variant="secondary"
+              className="justify-start rounded-2xl bg-white/10 text-white hover:bg-white/15"
+              onClick={() => onAction("translate")}
+              disabled={!message?.text}
+            >
+              <Globe className="mr-2 h-4 w-4" />
+              Translate
+            </Button>
+          </div>
+
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="secondary"
+              className="rounded-2xl bg-white/10 text-white hover:bg-white/15"
+              onClick={() => onOpenChange(false)}
+            >
+              Close
+            </Button>
           </div>
         </div>
-      </div>
-    </section>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
-    <!-- PAY -->
-    <section id="screen-pay" class="screen">
-      <div class="header">
-        <div class="title">Pay</div>
-        <button class="iconBtn gold" onclick="openPayModal()">送金</button>
-      </div>
-      <div class="center">
-        Payホーム（仮）<br>
-        「送金」を押すとモーダルが開きます
-      </div>
-    </section>
+// -------------------- Footer Notes --------------------
 
-    <!-- SEARCH -->
-    <section id="screen-search" class="screen">
-      <div class="header">
-        <div class="title">Search</div>
-        <button class="iconBtn gold" onclick="toast('探索UIは後で')">✨</button>
-      </div>
-      <div class="center">
-        Searchは今回は省略（UI骨格のみ）<br>
-        地図検索などは後で拡張
-      </div>
-    </section>
-
-    <!-- Tab bar -->
-    <nav class="tabs">
-      <button class="tab active" id="tab-post" onclick="showScreen('post')">📋<div class="dot"></div>Post</button>
-      <button class="tab" id="tab-talk" onclick="showScreen('talk')">💬<div class="dot"></div>Talk</button>
-      <button class="tab" id="tab-pay" onclick="showScreen('pay')">💳<div class="dot"></div>Pay</button>
-      <button class="tab" id="tab-search" onclick="showScreen('search')">🔍<div class="dot"></div>Search</button>
-    </nav>
-  </div>
-</div>
-
-<!-- Bottom sheet (+ menu) -->
-<div class="overlay" id="sheetOverlay" onclick="sheetBackdrop(event)">
-  <div class="sheet">
-    <div class="sheetHeader">
-      <div class="sheetTitle">＋メニュー</div>
-      <button class="iconBtn" onclick="closeSheet()">閉じる</button>
+function FooterNotes() {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
+      <div className="font-medium text-white">UI guarantees (important)</div>
+      <ul className="mt-2 list-disc space-y-1 pl-5">
+        <li>
+          Map split & AI split are <span className="text-white">state-based panels</span> (no navigation) and have an explicit <span className="text-white">X</span> to close.
+        </li>
+        <li>
+          Pay is a modal that is always dismissible (Cancel / X / ESC).
+        </li>
+        <li>
+          Auto-translate is a toggle; translated text is shown as a secondary line and can be cached.
+        </li>
+        <li>
+          Message actions are opened via right-click/double-click here; on mobile, wire to long-press.
+        </li>
+      </ul>
     </div>
-    <div class="sheetGrid">
-      <button class="sheetItem" onclick="openPayFromChat()">
-        <div class="k">Pay</div>
-        <div class="d">トーク内から送金UIを開く（仮）</div>
-      </button>
-      <button class="sheetItem" onclick="toggleMapSplit()">
-        <div class="k">位置情報</div>
-        <div class="d">二分割マップをON/OFF</div>
-      </button>
-    </div>
-  </div>
-</div>
+  );
+}
 
-<!-- Pay modal -->
-<div class="modal" id="payModal" onclick="payBackdrop(event)">
-  <div class="card">
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-      <h3 style="margin:0;">送金（仮UI）</h3>
-      <button class="iconBtn" onclick="closePayModal()">閉じる</button>
-    </div>
+// -------------------- Mock translation / AI --------------------
 
-    <div class="field">
-      <label>送金相手</label>
-      <input id="payTo" placeholder="例）Alex" />
-    </div>
-    <div class="field">
-      <label>金額（円）</label>
-      <input id="payAmount" inputmode="numeric" placeholder="例）1200" />
-    </div>
+function mockTranslate(text: string, to: string) {
+  // Placeholder for real translation API.
+  return `[${to}] ${text}`;
+}
 
-    <div class="rowBtns">
-      <button class="btn danger" onclick="closePayModal()">キャンセル</button>
-      <button class="btn primary" onclick="submitPay()">送金する</button>
-    </div>
-
-    <div class="hint">
-      ※ここはUIだけ。実決済は Stripe / 既存Pay連携などで後付け。<br>
-      MVPは「送金体験」を作るだけでOK。
-    </div>
-  </div>
-</div>
-
-<script>
-  // --- Simple state ---
-  const state = {
-    active: 'post',
-    chat: {
-      name: 'Alex',
-      splitOn: false,
-      ratio: 50,
-      messages: [
-        { me:false, text:'今どこ？' },
-        { me:true,  text:'駅の近くだよ' },
-        { me:false, text:'送金できる？' }
-      ]
-    }
-  };
-
-  // Talk list seed
-  const talks = [
-    { id:'t1', name:'Alex', last:'送金できる？', unread:2 },
-    { id:'t2', name:'Mina', last:'今日はありがとう！', unread:0 },
-    { id:'t3', name:'Kai',  last:'今度ご飯いこ', unread:1 },
-  ];
-
-  // --- UI helpers ---
-  function qs(id){ return document.getElementById(id); }
-
-  function showScreen(key){
-    state.active = key;
-    ['post','talk','chat','pay','search'].forEach(k=>{
-      qs(`screen-${k}`).classList.toggle('active', k===key);
-    });
-    ['post','talk','pay','search'].forEach(k=>{
-      qs(`tab-${k}`).classList.toggle('active', k===key);
-    });
+function mockAIOutput(text: string, action: AIAction) {
+  const base = text || "(empty)";
+  switch (action) {
+    case "furigana":
+      return `Reading assistance (mock)\n\n• 対象: ${base}\n• 例: 矛盾（むじゅん）\n\n実装: 選択テキスト→AI/辞書API→ふりがな付与→結果表示`;
+    case "meaning":
+      return `Explanation (mock)\n\n• 対象: ${base}\n• 解説: 文脈に沿って意味を短く説明\n\n実装: 選択テキスト＋周辺メッセージ→LLM→要点抽出`;
+    case "summary":
+      return `Summary (mock)\n\n• 対象: ${base}\n• 要約: 一文〜三文で圧縮\n\n実装: メッセージ単体 or スレッド範囲→LLM→短要約`;
+    case "translate":
+      return `Translation (mock)\n\n• 対象: ${base}\n• 翻訳: 設定言語へ変換\n\n実装: 翻訳API→DBキャッシュ→表示`;
+    case "examples":
+      return `Examples (mock)\n\n• 対象: ${base}\n• 例文: 使い方を2〜3個提示\n\n実装: LLMで例文生成（安全フィルタ）`;
+    default:
+      return base;
   }
-
-  function goTalk(){
-    showScreen('talk');
-  }
-
-  function openChat(name){
-    state.chat.name = name;
-    qs('chatTitle').textContent = name;
-    renderChat();
-    showScreen('chat');
-  }
-
-  function renderTalkList(){
-    const el = qs('talkList');
-    el.innerHTML = '';
-    talks.forEach(t=>{
-      const row = document.createElement('div');
-      row.className = 'row';
-      row.onclick = ()=>openChat(t.name);
-      row.innerHTML = `
-        <div class="avatar"></div>
-        <div class="rowMain">
-          <div class="name">${escapeHtml(t.name)}</div>
-          <div class="last">${escapeHtml(t.last)}</div>
-        </div>
-        ${t.unread>0 ? `<div class="badge">${t.unread}</div>` : ``}
-      `;
-      el.appendChild(row);
-    });
-  }
-
-  function renderChat(){
-    // normal or split
-    qs('splitRoot').style.display = state.chat.splitOn ? 'flex' : 'none';
-    qs('normalRoot').style.display = state.chat.splitOn ? 'none' : 'flex';
-
-    // ratio apply
-    qs('ratioRange').value = String(state.chat.ratio);
-    qs('ratioLabel').textContent = String(state.chat.ratio);
-    qs('splitTop').style.height = `${state.chat.ratio}vh`; // quick: use viewport-ish feel
-    // Better: flex ratio; but simplest in 1-file prototype.
-
-    // render messages
-    const body = state.chat.splitOn ? qs('chatBodySplit') : qs('chatBody');
-    body.innerHTML = '';
-    state.chat.messages.forEach(m=>{
-      const b = document.createElement('div');
-      b.className = 'bubble' + (m.me ? ' me' : '');
-      b.textContent = m.text;
-      body.appendChild(b);
-    });
-    body.scrollTop = body.scrollHeight;
-
-    // map init/update
-    if(state.chat.splitOn){
-      ensureMap();
-      setTimeout(()=> map.invalidateSize(), 50);
-    }
-  }
-
-  function sendMessage(isSplit){
-    const input = isSplit ? qs('chatInputSplit') : qs('chatInput');
-    const text = (input.value || '').trim();
-    if(!text) return;
-    state.chat.messages.push({ me:true, text });
-    input.value = '';
-    renderChat();
-  }
-
-  // --- Bottom sheet ---
-  function openSheet(){ qs('sheetOverlay').classList.add('show'); }
-  function closeSheet(){ qs('sheetOverlay').classList.remove('show'); }
-  function sheetBackdrop(e){ if(e.target.id==='sheetOverlay') closeSheet(); }
-
-  function openPayFromChat(){
-    closeSheet();
-    openPayModal(state.chat.name);
-  }
-
-  // --- Split map toggle ---
-  function toggleMapSplit(){
-    state.chat.splitOn = !state.chat.splitOn;
-    closeSheet();
-    renderChat();
-  }
-
-  // ratio control
-  qs('ratioRange').addEventListener('input', (e)=>{
-    const v = Number(e.target.value);
-    state.chat.ratio = v;
-    qs('ratioLabel').textContent = String(v);
-    qs('splitTop').style.height = `${v}vh`;
-    if(state.chat.splitOn) setTimeout(()=> map?.invalidateSize(), 10);
-  });
-
-  // --- Pay modal ---
-  function openPayModal(prefillName=''){
-    qs('payModal').classList.add('show');
-    qs('payTo').value = prefillName || '';
-    qs('payAmount').value = '';
-    setTimeout(()=> qs('payAmount').focus(), 50);
-  }
-  function closePayModal(){ qs('payModal').classList.remove('show'); }
-  function payBackdrop(e){ if(e.target.id==='payModal') closePayModal(); }
-  function submitPay(){
-    const to = qs('payTo').value.trim() || '相手';
-    const amt = qs('payAmount').value.trim() || '0';
-    closePayModal();
-    toast(`送金（仮）: ${to} に ¥${amt}`);
-    // add a receipt-like message into chat if currently chatting
-    if(state.active==='chat'){
-      state.chat.messages.push({ me:true, text:`【送金】${to} に ¥${amt}（仮）` });
-      renderChat();
-    }
-  }
-
-  // --- Tiny toast ---
-  let toastTimer;
-  function toast(msg){
-    clearTimeout(toastTimer);
-    let t = document.getElementById('toast');
-    if(!t){
-      t = document.createElement('div');
-      t.id='toast';
-      t.style.position='fixed';
-      t.style.left='50%';
-      t.style.bottom='84px';
-      t.style.transform='translateX(-50%)';
-      t.style.background='rgba(12,12,18,.9)';
-      t.style.border='1px solid rgba(255,255,255,.10)';
-      t.style.backdropFilter='blur(10px)';
-      t.style.padding='10px 12px';
-      t.style.borderRadius='14px';
-      t.style.boxShadow='0 10px 30px rgba(0,0,0,.35)';
-      t.style.color='white';
-      t.style.zIndex='100';
-      document.body.appendChild(t);
-    }
-    t.textContent = msg;
-    t.style.opacity='1';
-    toastTimer = setTimeout(()=>{ t.style.opacity='0'; }, 1400);
-  }
-
-  // --- Leaflet map ---
-  let map, meMarker, otherMarker;
-  function ensureMap(){
-    if(map) return;
-    map = L.map('map', { zoomControl:false }).setView([35.681236, 139.767125], 15);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19,
-      attribution: '&copy; OpenStreetMap'
-    }).addTo(map);
-
-    meMarker = L.marker([35.681236, 139.767125]).addTo(map).bindPopup('Me');
-    otherMarker = L.marker([35.6845, 139.7705]).addTo(map).bindPopup(state.chat.name);
-
-    // faux distance label via toast
-    toast('位置情報: 距離 約0.5km / 到着目安 7分（仮）');
-  }
-
-  // --- utils ---
-  function escapeHtml(s){
-    return String(s).replace(/[&<>"']/g, (m)=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m]));
-  }
-
-  // init
-  renderTalkList();
-</script>
-</body>
-</html>
+}
